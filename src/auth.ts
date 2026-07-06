@@ -42,6 +42,18 @@ function getTokenPath(): string {
   return join(homedir(), '.spotify-mcp', 'tokens.json');
 }
 
+/**
+ * Returns true when SPOTIFY_HEADLESS=1 is set, indicating the auth flow
+ * should skip the local HTTP callback server and the `open()` browser step,
+ * and instead prompt the operator to paste the redirect URL.
+ *
+ * Exported for testability (the env-var check is the gate for the whole
+ * paste-URL flow).
+ */
+export function isHeadlessMode(): boolean {
+  return process.env.SPOTIFY_HEADLESS === '1';
+}
+
 export async function loadTokens(): Promise<TokenData> {
   const tokenPath = getTokenPath();
   try {
@@ -142,6 +154,24 @@ async function runHeadlessAuthFlow(
     throw new Error('No redirect URL pasted — auth aborted.');
   }
 
+  const { code } = parseCallbackUrl(pasted, state);
+  return exchangeCodeForTokens(code, codeVerifier, clientId);
+}
+
+/**
+ * Parse and validate a pasted redirect URL from the headless auth flow.
+ * Pure function — exported for unit testing.
+ *
+ * Throws on:
+ *   - malformed URL
+ *   - `error` query param (Spotify returned an OAuth error)
+ *   - `state` mismatch (CSRF protection)
+ *   - missing `code` query param
+ */
+export function parseCallbackUrl(
+  pasted: string,
+  expectedState: string,
+): { code: string } {
   let parsed: URL;
   try {
     parsed = new URL(pasted);
@@ -155,7 +185,7 @@ async function runHeadlessAuthFlow(
   }
 
   const returnedState = parsed.searchParams.get('state');
-  if (returnedState !== state) {
+  if (returnedState !== expectedState) {
     throw new Error(
       `State mismatch — pasted URL state does not match the issued state. ` +
         `Possible CSRF or wrong browser session.`,
@@ -167,7 +197,7 @@ async function runHeadlessAuthFlow(
     throw new Error('No authorization code in pasted URL.');
   }
 
-  return exchangeCodeForTokens(code, codeVerifier, clientId);
+  return { code };
 }
 
 export async function runAuthFlow(): Promise<void> {
@@ -199,7 +229,7 @@ export async function runAuthFlow(): Promise<void> {
   // Headless mode: skip the local callback server and `open()` step.
   // Useful for MCP servers running without a browser (remote hosts, CI,
   // homelabs, agent runtimes). The operator pastes the redirect URL back.
-  if (process.env.SPOTIFY_HEADLESS === '1') {
+  if (isHeadlessMode()) {
     const tokens = await runHeadlessAuthFlow(authUrl, codeVerifier, state, clientId);
     await saveTokens(tokens);
     console.log('Authentication successful! Tokens saved to ~/.spotify-mcp/tokens.json');

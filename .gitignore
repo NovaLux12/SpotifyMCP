@@ -3,3 +3,5 @@ dist/
 .env
 .env.local
 *.js.map
+.pytest_cache/
+tests/__pycache__/

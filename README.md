@@ -32,6 +32,36 @@ SPOTIFY_HEADLESS=1 SPOTIFY_CLIENT_ID=your_client_id_here npx spotify-mcp@latest 
 
 The auth URL is printed; complete the flow in any browser (e.g. on your laptop), then paste the redirect URL back into the prompt. Useful for homelabs, CI, and agent runtimes.
 
+### Headless authentication (browserless hosts)
+
+If you're running this MCP server on a host that doesn't have a browser
+(e.g., a cloud VM, a Docker container, a remote server), set the
+`SPOTIFY_HEADLESS=1` environment variable. The auth flow will skip the
+local HTTP callback server and instead prompt you to paste the
+redirect URL after authorizing the app in your browser.
+
+#### Steps
+
+1. Set `SPOTIFY_HEADLESS=1` in your environment
+2. Run the server — it will print a URL to authorize the app
+3. Open the URL in a browser on a different machine
+4. After authorizing, your browser will redirect to the redirect URI
+5. Copy the full URL from the address bar
+6. Paste it back into the server prompt
+
+#### Why
+
+The default auth flow opens a browser via the `open` package and runs a
+local HTTP callback server on `127.0.0.1:8888`. That breaks when the MCP
+server runs on a headless host (homelab, CI, agent runtime) where there
+is no browser to `open()`, and the `127.0.0.1:8888` callback can't be
+reached from the user's machine.
+
+`SPOTIFY_HEADLESS=1` switches to a paste-URL flow: the auth URL is
+printed to stdout, the operator completes the flow in any browser (their
+laptop, phone), then pastes the full redirect URL back. The code +
+state are extracted and exchanged server-side. Works across machines.
+
 **Windows (Command Prompt):**
 ```cmd
 set SPOTIFY_CLIENT_ID=your_client_id_here && npx spotify-mcp@latest auth
