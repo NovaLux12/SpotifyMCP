@@ -3,6 +3,8 @@ import { createServer } from 'http';
 import { mkdir, writeFile, readFile, chmod } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
+import { createInterface } from 'readline/promises';
+import { stdin as input, stdout as output } from 'process';
 import open from 'open';
 import type { TokenData } from './types/spotify.js';
 
@@ -66,6 +68,108 @@ export async function saveTokens(tokens: TokenData): Promise<void> {
   }
 }
 
+/**
+ * Exchange an authorization code (plus PKCE verifier) for tokens.
+ * Used by both the browser flow (callback server extracts the code) and the
+ * headless flow (operator pastes the redirect URL).
+ */
+async function exchangeCodeForTokens(
+  code: string,
+  codeVerifier: string,
+  clientId: string,
+): Promise<TokenData> {
+  const tokenBody = new URLSearchParams({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: REDIRECT_URI,
+    client_id: clientId,
+    code_verifier: codeVerifier,
+  });
+  const tokenRes = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: tokenBody.toString(),
+  });
+  if (!tokenRes.ok) {
+    const text = await tokenRes.text();
+    throw new Error(`Token exchange failed: ${tokenRes.status} ${text}`);
+  }
+  const data = (await tokenRes.json()) as {
+    access_token: string;
+    refresh_token: string;
+    expires_in: number;
+  };
+  return {
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    expires_at: Date.now() + data.expires_in * 1000,
+  };
+}
+
+/**
+ * Headless auth flow for MCP servers running without a browser.
+ *
+ * Set SPOTIFY_HEADLESS=1 to skip the local callback server and `open()` step.
+ * The auth URL is printed, the operator completes the flow in any browser,
+ * then pastes the redirect URL back. The code + state are extracted and
+ * exchanged server-side. Works across machines — useful when the MCP server
+ * is remote (e.g. on a homelab) and the user is on a laptop.
+ */
+async function runHeadlessAuthFlow(
+  authUrl: string,
+  codeVerifier: string,
+  state: string,
+  clientId: string,
+): Promise<TokenData> {
+  console.log('Headless auth mode (SPOTIFY_HEADLESS=1) — no browser will be opened.');
+  console.log('');
+  console.log('1. Visit this URL in any browser:');
+  console.log(`   ${authUrl}`);
+  console.log('');
+  console.log('2. After approving, your browser will redirect to a URL starting with:');
+  console.log(`   ${REDIRECT_URI}?code=...&state=...`);
+  console.log('');
+  console.log('3. Paste the full redirect URL here:');
+
+  const rl = createInterface({ input, output });
+  let pasted: string;
+  try {
+    pasted = (await rl.question('Redirect URL: ')).trim();
+  } finally {
+    rl.close();
+  }
+  if (!pasted) {
+    throw new Error('No redirect URL pasted — auth aborted.');
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(pasted);
+  } catch {
+    throw new Error(`Pasted value is not a valid URL: ${pasted.slice(0, 80)}...`);
+  }
+
+  const errorParam = parsed.searchParams.get('error');
+  if (errorParam) {
+    throw new Error(`Spotify auth error from pasted URL: ${errorParam}`);
+  }
+
+  const returnedState = parsed.searchParams.get('state');
+  if (returnedState !== state) {
+    throw new Error(
+      `State mismatch — pasted URL state does not match the issued state. ` +
+        `Possible CSRF or wrong browser session.`,
+    );
+  }
+
+  const code = parsed.searchParams.get('code');
+  if (!code) {
+    throw new Error('No authorization code in pasted URL.');
+  }
+
+  return exchangeCodeForTokens(code, codeVerifier, clientId);
+}
+
 export async function runAuthFlow(): Promise<void> {
   const clientId = process.env.SPOTIFY_CLIENT_ID;
   if (!clientId) {
@@ -91,6 +195,16 @@ export async function runAuthFlow(): Promise<void> {
     state,
   });
   const authUrl = `https://accounts.spotify.com/authorize?${authParams}`;
+
+  // Headless mode: skip the local callback server and `open()` step.
+  // Useful for MCP servers running without a browser (remote hosts, CI,
+  // homelabs, agent runtimes). The operator pastes the redirect URL back.
+  if (process.env.SPOTIFY_HEADLESS === '1') {
+    const tokens = await runHeadlessAuthFlow(authUrl, codeVerifier, state, clientId);
+    await saveTokens(tokens);
+    console.log('Authentication successful! Tokens saved to ~/.spotify-mcp/tokens.json');
+    return;
+  }
 
   // Start local callback server
   const tokens = await new Promise<TokenData>((resolve, reject) => {
@@ -133,41 +247,7 @@ export async function runAuthFlow(): Promise<void> {
 
       // Exchange code for tokens
       try {
-        const tokenBody = new URLSearchParams({
-          grant_type: 'authorization_code',
-          code,
-          redirect_uri: REDIRECT_URI,
-          client_id: clientId,
-          code_verifier: codeVerifier,
-        });
-
-        const tokenRes = await fetch('https://accounts.spotify.com/api/token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: tokenBody.toString(),
-        });
-
-        if (!tokenRes.ok) {
-          const text = await tokenRes.text();
-          res.writeHead(500, { 'Content-Type': 'text/html' });
-          res.end('<h1>Token exchange failed. Check your CLIENT_ID and try again.</h1>');
-          server.close();
-          reject(new Error(`Token exchange failed: ${tokenRes.status} ${text}`));
-          return;
-        }
-
-        const data = await tokenRes.json() as {
-          access_token: string;
-          refresh_token: string;
-          expires_in: number;
-        };
-
-        const result: TokenData = {
-          access_token: data.access_token,
-          refresh_token: data.refresh_token,
-          expires_at: Date.now() + data.expires_in * 1000,
-        };
-
+        const result = await exchangeCodeForTokens(code, codeVerifier, clientId);
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end('<h1>Authentication successful. You can close this tab.</h1>');
         server.close();

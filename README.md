@@ -24,6 +24,14 @@ Run the command below once to log in to your Spotify account. Replace `your_clie
 SPOTIFY_CLIENT_ID=your_client_id_here npx spotify-mcp@latest auth
 ```
 
+**Headless / remote hosts** (no browser on the machine running the MCP server):
+
+```bash
+SPOTIFY_HEADLESS=1 SPOTIFY_CLIENT_ID=your_client_id_here npx spotify-mcp@latest auth
+```
+
+The auth URL is printed; complete the flow in any browser (e.g. on your laptop), then paste the redirect URL back into the prompt. Useful for homelabs, CI, and agent runtimes.
+
 **Windows (Command Prompt):**
 ```cmd
 set SPOTIFY_CLIENT_ID=your_client_id_here && npx spotify-mcp@latest auth
