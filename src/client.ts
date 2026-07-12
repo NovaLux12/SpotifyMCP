@@ -17,6 +17,31 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Per-status fallback message — used only when Spotify returns no structured
+// error body (or returns one without a `message` field). Each message is
+// intentionally non-prescriptive: it names the likely cause categories rather
+// than asserting one specific reason.
+function genericMessageFor(status: number): string {
+  if (status === 403) {
+    // 403 from Spotify has many possible causes — insufficient OAuth scope,
+    // deprecated endpoint (e.g. /v1/audio-features after 2024-11-27),
+    // regional restriction, or a genuine Premium requirement for playback
+    // control. Don't assert "requires Premium" outright.
+    return (
+      'Spotify returned 403 — usually an OAuth scope, deprecated endpoint, or ' +
+      'content restriction (not always a Premium requirement). If you just ' +
+      'added scopes, re-run "spotify-mcp auth" to refresh the token.'
+    );
+  }
+  if (status === 404) {
+    return 'The requested resource was not found on Spotify';
+  }
+  if (status === 503) {
+    return 'Spotify service is temporarily unavailable — try again shortly';
+  }
+  return `Spotify API error ${status}`;
+}
+
 export class SpotifyClient {
   private tokens: TokenData | null = null;
   private loadPromise: Promise<TokenData> | null = null;
@@ -137,18 +162,29 @@ export class SpotifyClient {
     }
 
     if (!res.ok) {
-      let message = `Spotify API error ${res.status}`;
-      if (res.status === 403) {
-        message = 'This action requires Spotify Premium';
-      } else if (res.status === 404) {
-        message = 'The requested resource was not found on Spotify';
-      } else if (res.status === 503) {
-        message = 'Spotify service is temporarily unavailable — try again shortly';
-      } else {
-        try {
-          const err = await res.json() as { error?: { message?: string } };
-          if (err.error?.message) message = err.error.message;
-        } catch { /* ignore JSON parse failures */ }
+      // Always try to surface Spotify's own error message first — it's the
+      // most accurate diagnostic (e.g. "Audio analysis is not available for
+      // this account", "Player command failed: Premium required"). Only fall
+      // back to a generic mapping if Spotify gave us no structured body.
+      //
+      // Pre-fix, ANY HTTP 403 was rewritten to "This action requires Spotify
+      // Premium" — which is wrong for the many cases where 403 actually means
+      // insufficient OAuth scope, a deprecated endpoint, regional restriction,
+      // or a control failure (issues #6 etc.).
+      let message: string;
+      try {
+        const errBody = (await res.json()) as {
+          error?: { message?: string; reason?: string };
+        };
+        const spotifyMsg = errBody.error?.message;
+        if (spotifyMsg && spotifyMsg.trim().length > 0) {
+          message = spotifyMsg;
+        } else {
+          message = genericMessageFor(res.status);
+        }
+      } catch {
+        // Response body wasn't JSON — fall back to the per-status hint.
+        message = genericMessageFor(res.status);
       }
       throw new SpotifyApiError(res.status, message);
     }
