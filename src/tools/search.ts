@@ -9,16 +9,34 @@ function formatDuration(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
+// Spotify only returns the requested types in the response body. When the
+// caller asks for `types: ["artist"]`, the response has `artists` but no
+// `tracks` / `albums` / etc. \`.tracks\` etc are optional for that reason.
+// This helper pulls a section's items out as a guaranteed non-empty array
+// OR returns \`null\` for 'section not present' — which is what the caller
+// checks before formatting.
+function sectionItems<K extends keyof SearchResponse>(
+  results: SearchResponse,
+  key: K,
+): NonNullable<SearchResponse[K]> | null {
+  const section = results[key] as { items?: unknown[] } | undefined;
+  const items = Array.isArray(section?.items) ? section!.items : [];
+  return items.length > 0 ? (section as NonNullable<SearchResponse[K]>) : null;
+}
+
 export function registerSearchTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'search',
-    "Search Spotify's catalog for tracks, artists, albums, playlists, shows, or episodes",
+    "Search Spotify's catalog for tracks, artists, albums, playlists, shows, or episodes. Pass `types` as an array (e.g. `[\"artist\"]`) to search a single kind — no track/album fallback noise.",
     {
       query: z.string().describe('Search query'),
       types: z
         .array(z.enum(['track', 'artist', 'album', 'playlist', 'show', 'episode']))
         .optional()
-        .describe('Content types to search. Default: ["track","artist","album"]'),
+        .describe(
+          'Content types to search, as an array. Default: ["track","artist","album"]. ' +
+            'Pass e.g. ["artist"] for an artist-only search.',
+        ),
       limit: z
         .number()
         .int()
@@ -46,53 +64,77 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
 
       const lines: string[] = [`Search results for "${args.query}":\n`];
 
-      if (results.tracks?.items.length) {
-        lines.push(`TRACKS (${results.tracks.total} total):`);
-        for (const t of results.tracks.items) {
+      // Issue #5: when the caller asks for types=["artist"], Spotify returns
+      // only the `artists` field in the response. Each section therefore needs
+      // an independent optional-chain guard, and \`items\` on each row needs an
+      // array guard because some Spotify responses omit `genres` etc.
+      const tracks = sectionItems(results, 'tracks');
+      if (tracks) {
+        lines.push(`TRACKS (${tracks.total} total):`);
+        for (const t of tracks.items) {
           const artists = t.artists.map((a) => a.name).join(', ');
-          lines.push(`  • "${t.name}" by ${artists} — ${t.album.name} (${formatDuration(t.duration_ms)}) | URI: ${t.uri}`);
+          lines.push(
+            `  • "${t.name}" by ${artists} — ${t.album.name} (${formatDuration(t.duration_ms)}) | URI: ${t.uri}`,
+          );
         }
         lines.push('');
       }
 
-      if (results.artists?.items.length) {
-        lines.push(`ARTISTS (${results.artists.total} total):`);
-        for (const a of results.artists.items) {
-          const genres = a.genres.length ? ` — ${a.genres.slice(0, 3).join(', ')}` : '';
+      const artists = sectionItems(results, 'artists');
+      if (artists) {
+        lines.push(`ARTISTS (${artists.total} total):`);
+        for (const a of artists.items) {
+          const genreList =
+            Array.isArray(a.genres) && a.genres.length > 0
+              ? a.genres.slice(0, 3).join(', ')
+              : null;
+          const genres = genreList ? ` — ${genreList}` : '';
           lines.push(`  • ${a.name}${genres} | URI: ${a.uri}`);
         }
         lines.push('');
       }
 
-      if (results.albums?.items.length) {
-        lines.push(`ALBUMS (${results.albums.total} total):`);
-        for (const al of results.albums.items) {
+      const albums = sectionItems(results, 'albums');
+      if (albums) {
+        lines.push(`ALBUMS (${albums.total} total):`);
+        for (const al of albums.items) {
           const artists = al.artists.map((a) => a.name).join(', ');
-          lines.push(`  • "${al.name}" by ${artists} (${al.release_date}, ${al.total_tracks} tracks) | URI: ${al.uri}`);
+          lines.push(
+            `  • "${al.name}" by ${artists} (${al.release_date}, ${al.total_tracks} tracks) | URI: ${al.uri}`,
+          );
         }
         lines.push('');
       }
 
-      if (results.playlists?.items.length) {
-        lines.push(`PLAYLISTS (${results.playlists.total} total):`);
-        for (const p of results.playlists.items) {
-          lines.push(`  • "${p.name}" by ${p.owner.display_name ?? p.owner.id} (${p.tracks.total} tracks) | URI: ${p.uri}`);
+      const playlists = sectionItems(results, 'playlists');
+      if (playlists) {
+        lines.push(`PLAYLISTS (${playlists.total} total):`);
+        for (const p of playlists.items) {
+          lines.push(
+            `  • "${p.name}" by ${p.owner.display_name ?? p.owner.id} (${p.tracks.total} tracks) | URI: ${p.uri}`,
+          );
         }
         lines.push('');
       }
 
-      if (results.shows?.items.length) {
-        lines.push(`SHOWS (${results.shows.total} total):`);
-        for (const s of results.shows.items) {
-          lines.push(`  • "${s.name}" by ${s.publisher} (${s.total_episodes} episodes) | URI: ${s.uri}`);
+      const shows = sectionItems(results, 'shows');
+      if (shows) {
+        lines.push(`SHOWS (${shows.total} total):`);
+        for (const s of shows.items) {
+          lines.push(
+            `  • "${s.name}" by ${s.publisher} (${s.total_episodes} episodes) | URI: ${s.uri}`,
+          );
         }
         lines.push('');
       }
 
-      if (results.episodes?.items.length) {
-        lines.push(`EPISODES (${results.episodes.total} total):`);
-        for (const e of results.episodes.items) {
-          lines.push(`  • "${e.name}" — ${e.show.name} (${formatDuration(e.duration_ms)}, ${e.release_date}) | URI: ${e.uri}`);
+      const episodes = sectionItems(results, 'episodes');
+      if (episodes) {
+        lines.push(`EPISODES (${episodes.total} total):`);
+        for (const e of episodes.items) {
+          lines.push(
+            `  • "${e.name}" — ${e.show.name} (${formatDuration(e.duration_ms)}, ${e.release_date}) | URI: ${e.uri}`,
+          );
         }
         lines.push('');
       }
