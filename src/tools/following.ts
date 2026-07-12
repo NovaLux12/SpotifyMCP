@@ -53,16 +53,37 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
       const result = await client.get<FollowedArtistsResponse>('/me/following', params);
       if (!result) throw new Error('Could not retrieve followed artists');
 
-      const { artists } = result;
-      const lines = [
-        `Followed artists (${artists.total} total, showing ${artists.items.length}):`,
-      ];
-      for (const artist of artists.items) {
-        const genres = artist.genres.length ? artist.genres.join(', ') : 'no genres listed';
+      // Same defensive guard as issue #3 — \`result.artists\` is what Spotify
+      // returns on success but can be null/undefined on edge cases
+      // (e.g. account with zero followed artists, transient state issue).
+      // Validate before reading .items.length to avoid the crash on issue #4.
+      const followed = result.artists ?? {
+        items: [],
+        total: 0,
+        cursors: null,
+        next: null,
+      };
+      const items = Array.isArray(followed.items) ? followed.items : [];
+      const total = typeof followed.total === 'number' ? followed.total : items.length;
+
+      if (items.length === 0) {
+        return {
+          content: [
+            { type: 'text', text: `Followed artists (${total} total, showing 0).` },
+          ],
+        };
+      }
+
+      const lines = [`Followed artists (${total} total, showing ${items.length}):`];
+      for (const artist of items) {
+        const genres =
+          Array.isArray(artist.genres) && artist.genres.length > 0
+            ? artist.genres.join(', ')
+            : 'no genres listed';
         lines.push(`  • ${artist.name} — ${genres} | URI: ${artist.uri}`);
       }
-      if (artists.cursors?.after) {
-        lines.push(`\nNext page cursor: ${artists.cursors.after}`);
+      if (followed.cursors?.after) {
+        lines.push(`\nNext page cursor: ${followed.cursors.after}`);
       }
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     },
