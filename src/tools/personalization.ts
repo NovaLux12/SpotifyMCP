@@ -72,8 +72,21 @@ export function registerPersonalizationTools(server: McpServer, client: SpotifyC
       const result = await client.get<SpotifyPaged<SpotifyTrack>>('/me/top/tracks', params);
       if (!result) throw new Error('Could not retrieve top tracks');
 
-      const lines = [`Top tracks (${result.total} total, showing ${result.items.length}):`];
-      result.items.forEach((track, i) => {
+      // Spotify's /me/top/tracks can return null/undefined `items` on 200 in
+      // some edge cases (no listening history, account issue, malformed
+      // pagination state). Validate before reading `.length` to avoid the
+      // "Cannot read properties of undefined" crash on issue #3.
+      const items = Array.isArray(result.items) ? result.items : [];
+      const total = typeof result.total === 'number' ? result.total : items.length;
+
+      if (items.length === 0) {
+        return {
+          content: [{ type: 'text', text: `No top tracks found (total: ${total}).` }],
+        };
+      }
+
+      const lines = [`Top tracks (${total} total, showing ${items.length}):`];
+      items.forEach((track, i) => {
         const artists = track.artists.map((a) => a.name).join(', ');
         lines.push(
           `  ${i + 1}. "${track.name}" by ${artists} (${formatDuration(track.duration_ms)}) | URI: ${track.uri}`,
@@ -99,9 +112,25 @@ export function registerPersonalizationTools(server: McpServer, client: SpotifyC
       const result = await client.get<SpotifyPaged<SpotifyArtistFull>>('/me/top/artists', params);
       if (!result) throw new Error('Could not retrieve top artists');
 
-      const lines = [`Top artists (${result.total} total, showing ${result.items.length}):`];
-      result.items.forEach((artist, i) => {
-        const genres = artist.genres.length ? artist.genres.join(', ') : 'no genres listed';
+      // Same defensive guard as get_top_tracks above — issue #3 crashes
+      // here when Spotify returns null/undefined `items` or when an artist
+      // row omits `genres` (the second access previously crashed). Surface
+      // a useful empty/error message instead.
+      const items = Array.isArray(result.items) ? result.items : [];
+      const total = typeof result.total === 'number' ? result.total : items.length;
+
+      if (items.length === 0) {
+        return {
+          content: [{ type: 'text', text: `No top artists found (total: ${total}).` }],
+        };
+      }
+
+      const lines = [`Top artists (${total} total, showing ${items.length}):`];
+      items.forEach((artist, i) => {
+        const genres =
+          Array.isArray(artist.genres) && artist.genres.length > 0
+            ? artist.genres.join(', ')
+            : 'no genres listed';
         lines.push(`  ${i + 1}. ${artist.name} — ${genres} | URI: ${artist.uri}`);
       });
       return { content: [{ type: 'text', text: lines.join('\n') }] };
