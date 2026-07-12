@@ -36,6 +36,7 @@
     "build": "tsc && node scripts/add-shebang.js",
     "dev": "node --env-file=.env --import tsx/esm src/index.ts",
     "auth": "node --env-file=.env --import tsx/esm src/index.ts auth",
-    "start": "node --env-file=.env dist/index.js"
+    "start": "node --env-file=.env dist/index.js",
+    "test": "node --import tsx --test 'tests/*.test.ts'"
   }
 }
