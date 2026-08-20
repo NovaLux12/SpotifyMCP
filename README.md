@@ -97,6 +97,18 @@ Add the `mcpServers` block (replace `your_client_id_here` with your Client ID):
 
 Fully quit and restart Claude Desktop. A hammer icon in the chat input confirms the server is connected.
 
+### Alternative: Claude Code
+
+If you use Claude Code, add the server without editing JSON by hand:
+
+```bash
+claude mcp add spotify -- npx -y spotify-mcp@latest
+# then set SPOTIFY_CLIENT_ID in your shell or MCP env:
+export SPOTIFY_CLIENT_ID=your_client_id_here
+```
+
+Or add it to `.mcp.json` in your project root — same `command`/`args`/`env` shape as above.
+
 ## Usage
 
 Once connected, you can ask Claude things like:
@@ -106,6 +118,13 @@ Once connected, you can ask Claude things like:
 - "Add the song Blinding Lights to my workout playlist"
 - "What artists have I been listening to most lately?"
 - "Make me a playlist with a late night driving vibe"
+
+## Troubleshooting
+
+- **"Not authenticated" on first tool call** — run `npx spotify-mcp@latest auth` (or `npm run auth` from a clone) and complete the browser flow. Tokens are stored at `~/.spotify-mcp/tokens.json` and refreshed automatically.
+- **Redirect URI mismatch** — the Spotify app's redirect URI must be *exactly* `http://127.0.0.1:8888/callback` (no trailing slash). Save the app settings and retry.
+- **Port 8888 busy** — another process is holding the callback port; stop it or pick a free port via `SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback` with a different port and matching Dashboard setting.
+- **Headless / Docker** — set `SPOTIFY_HEADLESS=1` before `auth`; paste the redirect URL back when prompted (see above).
 
 ## Disclaimer
 
@@ -126,3 +145,5 @@ Copy `.env.example` to `.env` and fill in your Client ID, then:
 npm run auth   # authenticate with Spotify
 npm run dev    # run from source (no build needed)
 ```
+
+Requires Node 20+ (`--env-file` flag). On older Node, use `npx dotenv-cli` or export `SPOTIFY_CLIENT_ID` in your shell.
